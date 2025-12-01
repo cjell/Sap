@@ -10,14 +10,24 @@ from .rrf import fuse_results_rrf
 
 class Router:
     def __init__(self):
-        self.llava = LLaVANextCaptioner(model_path="backend/models/llava-next")
-        self.text_embedder = TextEmbedder(model_path="backend/models/text")
-        self.dino = DinoV2(model_path="backend/models/dino")
+        # self.llava = LLaVANextCaptioner(model_path="models/llava-next")
+        # self.text_embedder = TextEmbedder(model_path="models/text")
+        # self.dino = DinoV2(model_path="models/dino")
+
+        # self.retriever = Retriever(
+        #     text_embedder=self.text_embedder,
+        #     dino=self.dino,
+        #     base_dir="vector_stores"
+        # )
+
+
+        self.llava_url = "https://cjell-NepalRag.hf.space/llava"
+        self.dino_url = "https://cjell-NepalRag.hf.space/dino"
+        self.embed_url = "https://cjell-NepalRag.hf.space/embed"
 
         self.retriever = Retriever(
-            text_embedder=self.text_embedder,
-            dino=self.dino,
-            base_dir="backend/vector_stores"
+            router=self,
+            base_dir="vector_stores"
         )
 
     def handle_query(
