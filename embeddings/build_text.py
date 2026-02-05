@@ -5,15 +5,13 @@ import numpy as np
 from PyPDF2 import PdfReader
 
 sys.path.append("backend/app")
-
 from text_embedder import TextEmbedder
-
 
 PDF_PATH = "data/Indogangetic.pdf"
 PLANT_PATH = "data/plant_data.json"
 
 OUT_INDEX = "backend/vector_stores/text_faiss/index.faiss"
-OUT_META = "backend/vector_stores/text_faiss/metadata.json"
+OUT_META  = "backend/vector_stores/text_faiss/metadata.json"
 
 CHUNK_SIZE = 450
 CHUNK_OVERLAP = 80
@@ -36,6 +34,7 @@ def extract_pdf_chunks(path):
         while start < L:
             end = min(start + CHUNK_SIZE, L)
             chunk = text[start:end].strip()
+
             if chunk:
                 chunks.append(chunk)
                 meta.append({
@@ -64,12 +63,15 @@ def load_plant_metadata(path):
         if not info:
             continue
 
+        plant_id = plant["id"]
+        plant_name = plant.get("name", "")
+
         chunks.append(info)
         meta.append({
-            "id": f"plant_{plant['id']}",
+            "id": f"plant_{plant_id}",
             "source": "plant_metadata",
-            "plant_id": plant["id"],
-            "name": plant.get("name", ""),
+            "plant_id": plant_id,
+            "plant_name": plant_name,
             "text": info
         })
 
@@ -77,7 +79,7 @@ def load_plant_metadata(path):
 
 
 def build_text_index():
-    print("\nBuilding Text\n")
+    print("\n-Building Text FAISS store-\n")
 
     pdf_chunks, pdf_meta = extract_pdf_chunks(PDF_PATH)
     plant_chunks, plant_meta = load_plant_metadata(PLANT_PATH)
@@ -85,7 +87,7 @@ def build_text_index():
     texts = pdf_chunks + plant_chunks
     metadata = pdf_meta + plant_meta
 
-    print(f"-Total chunks: {len(texts)}-")
+    print(f"Total text chunks: {len(texts)}")
 
     embedder = TextEmbedder()
     vectors = []
@@ -93,12 +95,12 @@ def build_text_index():
     for i, t in enumerate(texts):
         vectors.append(embedder.embed(t))
         if (i + 1) % 25 == 0:
-            print(f"-embedded {i+1}/{len(texts)}-")
+            print(f" embedded {i+1}/{len(texts)}")
 
     matrix = np.vstack(vectors).astype("float32")
     dim = matrix.shape[1]
 
-    print(f"-Matrix shape: {matrix.shape}-")
+    print(f"Matrix shape: {matrix.shape}")
 
     index = faiss.IndexFlatIP(dim)
     index.add(matrix)
@@ -108,7 +110,7 @@ def build_text_index():
     with open(OUT_META, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-    print("\n-Saved text index + metadata-\n")
+    print("\nSaved text index + metadata\n")
 
 
 if __name__ == "__main__":

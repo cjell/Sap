@@ -1,36 +1,42 @@
-# Main loop for LLM Interaction
-# Handles queries by routing to respective files (DinoV2 and LLaVA-Next for images)
-
-
 import os
 from uuid import uuid4
 from typing import Optional, List, Dict, Any
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import UploadFile, File
+from fastapi.responses import StreamingResponse
+import io
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from PIL import Image
 
 from openai import OpenAI
+
+from PIL import Image
 
 from .router import Router
 from .memory import MemoryStore
 from .utils import decode_base64_image, extract_text_field
 
-
 load_dotenv()
+client = OpenAI()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GPT_MODEL = os.getenv("GPT_MODEL", "gpt-4.1-mini")
 
-if not os.getenv("OPENAI_API_KEY"):
+if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY not set in .env")
-
 
 
 app = FastAPI(title="Sap — Nepal Plant Multimodal RAG")
 
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class QueryRequest(BaseModel):
     text: Optional[str] = None
@@ -55,22 +61,23 @@ class QueryResponse(BaseModel):
     retrieved: List[RetrievedItem]
 
 
-print("-- Loading Router, Memory, Models, FAISS... --")
+
+print("-Loading Router, Memory, Models, FAISS-")
 router = Router()
 memory = MemoryStore()
-print("-- Initialization complete --\n")
+print("-Everything is Loaded-\n")
 
 
+def call_gpt(messages: List[Dict[str, str]]) -> str:
 
-def call_gpt(messages):
     response = client.chat.completions.create(
         model=GPT_MODEL,
         messages=messages,
         temperature=0.2,
-        max_tokens=300
+        max_tokens=300,
     )
-    return response.choices[0].message.content
 
+    return response.choices[0].message.content
 
 # Endpoint for frontend to hit
 @app.post("/query", response_model=QueryResponse)
@@ -92,23 +99,47 @@ def query(req: QueryRequest):
     route_out = router.handle_query(
         text=user_text,
         image=pil_image,
-        top_k=5
+        top_k=5,
     )
 
-    mode = route_out["mode"]
+    mode = route_out.get("mode", "text")
     caption = route_out.get("generated_caption")
+    fused_all = route_out.get("fused_ranked", []) or []
+    identified_plant = route_out.get("identified_plant")
 
-    fused = route_out.get("fused_ranked", [])
-    fused = fused[:3]   
+    fused = fused_all[:3]
 
-    if fused:
-        context_blocks = [
-            f"[{i+1}] ({item.get('source')}) {extract_text_field(item)}"
-            for i, item in enumerate(fused)
-        ]
-        context_str = "\n\n".join(context_blocks)
+  
+    plant_candidate: Optional[Dict[str, Any]] = None
+    if identified_plant:
+        plant_candidate = identified_plant
     else:
-        context_str = "No retrieved context."
+        for item in fused_all:
+            if item.get("source") == "plant_metadata":
+                plant_candidate = item
+                break
+
+    context_blocks: List[str] = []
+
+    if plant_candidate:
+        pname = (
+            plant_candidate.get("plant_name")
+            or plant_candidate.get("name")
+            or plant_candidate.get("plant_id")
+        )
+        ptext = plant_candidate.get("text") or extract_text_field(plant_candidate)
+        context_blocks.append(
+            f"Identified plant candidate: {pname or 'Unknown'}\n"
+            f"Plant details: {ptext}"
+        )
+
+    for idx, item in enumerate(fused):
+        if plant_candidate is not None and item is plant_candidate:
+            continue
+        textval = extract_text_field(item)
+        context_blocks.append(f"[{idx+1}] ({item.get('source')}) {textval}")
+
+    context_str = "\n\n".join(context_blocks) if context_blocks else "No retrieved context."
 
     if user_text:
         question = user_text
@@ -120,25 +151,33 @@ def query(req: QueryRequest):
     system_msg = {
         "role": "system",
         "content": (
-            "You are Sap, an assistant focused on plant identification and "
-            "ethnobotanical knowledge from Nepal. Use retrieved context carefully, "
-            "avoid hallucination, and be concise."
+            "You are SAP (this is your name, say it if asked what you are or what your name is), a friendly and knowledgeable plant-identification, "
+            "agricultural, ecological,and ethnobotany assistant. You behave like a normal conversational agent "
+            "but with special expertise in Nepalese plants. You may use internal "
+            "context (retrieved text, image caption) but NEVER mention them or imply "
+            "that they came from a machine. Always speak naturally to the user."
+            "If the user asks about plant/ecological topics, you may answer, but steer towards your specialty."
+            "Do not use special formatting, lists, bullets, or latex."
         ),
     }
+    internal_context_msg = {
+        "role": "assistant",
+        "content": (
+            f"[INTERNAL CONTEXT – DO NOT REVEAL]\n"
+            f"Image understanding: {caption or 'No image'}\n"
+            f"Plant candidate: {plant_candidate or 'None'}\n"
+            f"Retrieved knowledge:\n{context_str}\n"
+        )
+}
 
-    past_memory = memory.get(session_id)
+    past = memory.get(session_id)
 
     user_msg = {
         "role": "user",
-        "content": (
-            f"User question: {question}\n\n"
-            f"Image caption: {caption or 'N/A'}\n\n"
-            f"Retrieved context:\n{context_str}\n\n"
-            "Answer clearly and accurately. If unsure, say so."
-        ),
+        "content": user_text or "What plant is this?",
     }
 
-    messages = [system_msg] + past_memory + [user_msg]
+    messages = [system_msg] + past + [internal_context_msg, user_msg]
 
     gpt_answer = call_gpt(messages)
 
@@ -149,7 +188,8 @@ def query(req: QueryRequest):
     for item in fused:
         textval = extract_text_field(item)
         extra = {
-            k: v for k, v in item.items()
+            k: v
+            for k, v in item.items()
             if k not in {"id", "source", "faiss_distance", "rrf_score"}
         }
         retrieved_clean.append(
@@ -169,4 +209,33 @@ def query(req: QueryRequest):
         caption=caption,
         answer=gpt_answer,
         retrieved=retrieved_clean,
+    )
+
+@app.post("/stt")
+async def stt_endpoint(file: UploadFile = File(...)):
+    audio_bytes = await file.read()
+
+    transcript = client.audio.transcriptions.create(
+        model="whisper-1",
+        file=("audio.wav", audio_bytes)
+    )
+
+    return {"text": transcript.text}
+
+class TTSRequest(BaseModel):
+    text: str
+
+@app.post("/tts")
+async def tts_endpoint(req: TTSRequest):
+    audio = client.audio.speech.create(
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        input=req.text,
+    )
+
+    audio_bytes = audio.read()
+
+    return StreamingResponse(
+        io.BytesIO(audio_bytes),
+        media_type="audio/wav"
     )
