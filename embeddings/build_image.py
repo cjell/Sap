@@ -1,3 +1,5 @@
+# Handles image embedding for outputs of DINOV2
+
 import sys, faiss, json
 import numpy as np
 from PIL import Image
