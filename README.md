@@ -1,6 +1,11 @@
 # SAP
 **Multimodal Retrieval-Augmented Generation for Plant Identification and Reasoning**
 
+
+![picture1](https://github.com/user-attachments/assets/5481082a-e4ae-4238-81ef-cad3b6b4db65)
+
+
+
 SAP is a **multimodal retrieval-augmented generation (RAG) pipeline** designed for **image-based plant identification and ecological reasoning**, with a focus on Nepalese flora.  
 The system integrates **visual embeddings, language-based descriptions, and structured metadata** to produce grounded, explainable responses based on retrieved evidence rather than free-form generation.
 
